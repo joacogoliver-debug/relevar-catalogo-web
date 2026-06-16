@@ -15,6 +15,46 @@ import relevar_core as R
 
 st.set_page_config(page_title="Relevar Catálogo · Mojo", page_icon="🎵", layout="wide")
 
+_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"], button, input { font-family: 'Inter', sans-serif; }
+
+/* Ocultar el chrome por defecto de Streamlit */
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { visibility: hidden; }
+
+.block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1080px; }
+
+/* Header */
+.hero {
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 60%, #DB2777 100%);
+  color: #fff; padding: 30px 34px; border-radius: 20px; margin-bottom: 1.6rem;
+  box-shadow: 0 10px 30px rgba(79,70,229,.25);
+}
+.hero h1 { color:#fff; margin:0; font-size:2.05rem; font-weight:800; letter-spacing:-.5px; }
+.hero p  { color:#EDE9FE; margin:.45rem 0 0; font-size:1.02rem; max-width:680px; }
+
+/* Tarjetas de métricas */
+[data-testid="stMetric"] {
+  background:#FFFFFF; border:1px solid #ECECF3; border-radius:16px;
+  padding:18px 20px; box-shadow:0 1px 3px rgba(16,24,40,.04);
+}
+[data-testid="stMetricLabel"] { opacity:.65; font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.4px; }
+[data-testid="stMetricValue"] { font-weight:800; }
+
+/* Botones */
+.stButton>button, .stDownloadButton>button {
+  border-radius:11px; font-weight:700; padding:.55rem 1.1rem; border:none;
+}
+.stDownloadButton>button { background:#16A34A; color:#fff; }
+
+/* Subtítulos de sección */
+h3 { font-weight:700; margin-top:1.6rem; }
+hr { margin:1.4rem 0; }
+</style>
+"""
+st.markdown(_CSS, unsafe_allow_html=True)
+
 
 def secret(name, default=""):
     """Lee un secreto del servidor (st.secrets) o de variables de entorno."""
@@ -61,20 +101,34 @@ def main():
     sp_id = secret("SPOTIFY_CLIENT_ID")
     sp_secret = secret("SPOTIFY_CLIENT_SECRET")
 
-    st.title("🎵 Relevar Catálogo")
-    st.caption("Pegá el link del canal o Topic de un artista en YouTube y descargá "
-               "el catálogo completo con distribuidora, reproducciones, ISRC y UPC.")
+    st.markdown(
+        '<div class="hero"><h1>🎵 Relevar Catálogo</h1>'
+        '<p>Pegá el link del canal o Topic de un artista en YouTube y descargá '
+        'su catálogo completo: distribuidora, reproducciones y, si querés, los '
+        'códigos ISRC y UPC.</p></div>',
+        unsafe_allow_html=True)
 
     if not yt_key:
         st.error("⚠️ Falta configurar `YOUTUBE_API_KEY` en el servidor. Avisá al administrador.")
         return
-    if not (sp_id and sp_secret):
-        st.warning("Spotify no está configurado: el relevamiento funciona igual, "
-                   "pero sin los códigos ISRC/UPC.")
+
+    spotify_available = bool(sp_id and sp_secret)
 
     url = st.text_input(
         "Link del canal / Topic",
         placeholder="https://www.youtube.com/channel/UC...   ó   https://www.youtube.com/@Artista")
+
+    if spotify_available:
+        con_codigos = st.checkbox(
+            "Buscar códigos ISRC y UPC en Spotify",
+            value=True,
+            help="Agrega ISRC (por canción) y UPC (por álbum). Tarda un poco más; "
+                 "si no los necesitás, destildalo para ir más rápido.")
+    else:
+        con_codigos = False
+        st.caption("ℹ️ Spotify no está configurado en el servidor: el relevamiento "
+                   "funciona igual, pero sin códigos ISRC/UPC.")
+
     go = st.button("Relevar catálogo", type="primary", disabled=not url)
 
     # Solo se releva al apretar el botón; el resultado queda guardado para que
@@ -88,7 +142,11 @@ def main():
             bar.progress(min(max(frac, 0.0), 1.0))
 
         try:
-            res = R.relevar(url.strip(), yt_key, sp_id, sp_secret, progress=progress)
+            res = R.relevar(
+                url.strip(), yt_key,
+                sp_id if con_codigos else None,
+                sp_secret if con_codigos else None,
+                progress=progress)
         except R.RelevarError as e:
             bar.empty(); box.empty()
             st.error(str(e))
