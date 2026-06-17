@@ -20,6 +20,7 @@ import urllib.request
 import base64
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from difflib import SequenceMatcher
 
@@ -223,18 +224,36 @@ def build_tracks(videos):
 
 
 # ============================================================
-# Enriquecimiento con Spotify (ISRC por track + UPC por álbum)
+# Enriquecimiento de códigos (ISRC + UPC) — Deezer + respaldo MusicBrainz
 # ============================================================
-# Opcional: si no hay credenciales de Spotify configuradas, se saltea y la
-# herramienta funciona igual (sin ISRC/UPC). El match es best-effort: se busca
-# el track en Spotify por artista+título y se desempata por duración. Solo se
-# completan códigos cuando la confianza es suficiente; ante la duda, se deja en
-# blanco (mejor un hueco que un código equivocado en un contrato).
+# Sin claves: Deezer y MusicBrainz son APIs públicas (adiós "se quedó sin
+# créditos"). Deezer es la fuente principal (rápida y en paralelo: el ISRC viene
+# en la búsqueda, el UPC por álbum). MusicBrainz es respaldo opcional para los
+# tracks que Deezer no encuentre (lento: 1 pedido/seg, y cobertura despareja para
+# artistas DIY → apagado por defecto). Match best-effort por título+artista+
+# duración; ante la duda, código en blanco (mejor un hueco que un código errado).
 
-SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-SPOTIFY_API = "https://api.spotify.com/v1"
+DEEZER_API = "https://api.deezer.com"
+MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
+USER_AGENT = "RelevarCatalogo/1.1 (https://mojo-latam)"
+# Deezer permite ~50 pedidos/5s por IP. Con 6 hilos + reintento ante quota,
+# quedamos rápidos sin que nos corte. (MusicBrainz va aparte, secuencial.)
+CODES_WORKERS = 6
 
-# Sufijos de YouTube que ensucian el match (no están en el título del DSP).
+
+def _deezer_json(path):
+    """GET a Deezer con reintento. Deezer señala el límite de tasa con un JSON
+    de error a HTTP 200 ({"error": {...}}), así que lo detectamos y reintentamos."""
+    url = f"{DEEZER_API}/{path}"
+    for _ in range(6):
+        data = _http_json(url)
+        if isinstance(data, dict) and data.get("error"):
+            time.sleep(1.5)
+            continue
+        return data
+    return None
+
+# Sufijos de YouTube que ensucian el match (no están en el catálogo del DSP).
 _RE_TITLE_NOISE = re.compile(
     r"\((?:[^)]*?(?:video|oficial|official|audio|en vivo|live|lyric|letra|"
     r"visualizer|remaster|hd|4k|cover)[^)]*?)\)|\[[^\]]*\]", re.IGNORECASE)
@@ -242,58 +261,35 @@ _RE_TITLE_NOISE = re.compile(
 
 def _clean_title(title):
     t = _RE_TITLE_NOISE.sub("", title or "")
-    t = re.sub(r"\s+", " ", t).strip(" -–·")
-    return t
+    return re.sub(r"\s+", " ", t).strip(" -–·")
 
 
-def spotify_token(cid, csec):
-    auth = base64.b64encode(f"{cid}:{csec}".encode()).decode()
-    data = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode()
-    req = urllib.request.Request(
-        SPOTIFY_TOKEN_URL, data=data,
-        headers={"Authorization": f"Basic {auth}",
-                 "Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))["access_token"]
-    except urllib.error.HTTPError as e:
-        raise RelevarError("ERROR autenticando con Spotify: revisá SPOTIFY_CLIENT_ID / "
-                         f"SPOTIFY_CLIENT_SECRET (HTTP {e.code}).")
-
-
-def _spotify_get(path, token, params=None):
-    url = f"{SPOTIFY_API}/{path}"
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    for attempt in range(4):
+def _http_json(url, headers=None, retries=3):
+    req = urllib.request.Request(url, headers=headers or {})
+    for _ in range(retries):
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=25) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            if e.code == 429:  # rate limit → respetar Retry-After
-                wait = int(e.headers.get("Retry-After", "2")) + 1
-                time.sleep(min(wait, 30))
-                continue
-            if e.code in (500, 502, 503):
-                time.sleep(2)
+            if e.code in (429, 500, 502, 503):
+                time.sleep(int(e.headers.get("Retry-After", "1")) + 1)
                 continue
             return None
+        except Exception:
+            time.sleep(1)
+            continue
     return None
 
 
-def _score_candidate(yt_title, yt_artist, yt_dur, cand):
-    sp_title = cand.get("name", "")
-    sp_artists = " ".join(a.get("name", "") for a in cand.get("artists", []))
+def _match_score(yt_title, yt_artist, yt_dur, cand_title, cand_artist, cand_dur):
     ratio = SequenceMatcher(None, _normalize(_clean_title(yt_title)),
-                            _normalize(sp_title)).ratio()
-    na, ns = _normalize(yt_artist), _normalize(sp_artists)
+                            _normalize(cand_title or "")).ratio()
+    na, ns = _normalize(yt_artist), _normalize(cand_artist or "")
     artist_ok = bool(na) and (na in ns or ns in na or
                               SequenceMatcher(None, na, ns).ratio() >= 0.6)
     dur_close = None
-    sp_dur = round((cand.get("duration_ms") or 0) / 1000)
-    if yt_dur and sp_dur:
-        dur_close = abs(yt_dur - sp_dur) <= 4
+    if yt_dur and cand_dur:
+        dur_close = abs(yt_dur - cand_dur) <= 4
     score = ratio + (0.10 if artist_ok else 0) + (0.10 if dur_close else 0)
     return score, ratio, artist_ok, dur_close
 
@@ -306,62 +302,110 @@ def _confidence(ratio, artist_ok, dur_close):
     return ""
 
 
-def match_track_on_spotify(token, t, artist):
+# ---- Deezer (principal, sin clave) ----
+def deezer_match(t, artist):
     """Devuelve (isrc, album_id, confianza) o ('', None, '')."""
-    q = f'track:{_clean_title(t["track"])} artist:{artist}'
-    data = _spotify_get("search", token, {"q": q, "type": "track", "limit": 5})
-    items = (data or {}).get("tracks", {}).get("items", [])
+    title = _clean_title(t["track"])
+    q = urllib.parse.quote(f'track:"{title}" artist:"{artist}"')
+    items = (_deezer_json(f"search?q={q}&limit=5") or {}).get("data") or []
+    if not items:  # reintento con búsqueda libre (el filtro estricto a veces no matchea)
+        q2 = urllib.parse.quote(f"{title} {artist}")
+        items = (_deezer_json(f"search?q={q2}&limit=5") or {}).get("data") or []
     if not items:
         return "", None, ""
     best, best_meta = None, None
     for c in items:
-        sc = _score_candidate(t["track"], artist, t.get("duration_s", 0), c)
+        sc = _match_score(t["track"], artist, t.get("duration_s", 0),
+                          c.get("title", ""), (c.get("artist") or {}).get("name", ""),
+                          c.get("duration", 0))
         if best is None or sc[0] > best[0]:
             best, best_meta = sc, c
     conf = _confidence(best[1], best[2], best[3])
     if not conf:
         return "", None, ""
-    isrc = (best_meta.get("external_ids") or {}).get("isrc", "") or ""
-    album_id = (best_meta.get("album") or {}).get("id")
-    return isrc, album_id, conf
+    isrc = best_meta.get("isrc") or ""
+    if not isrc:  # algunos resultados no traen ISRC en la búsqueda → pedir el track
+        isrc = (_deezer_json(f"track/{best_meta.get('id')}") or {}).get("isrc") or ""
+    return isrc, (best_meta.get("album") or {}).get("id"), conf
 
 
-def fetch_album_upcs(token, album_ids):
-    """UPC por álbum. Devuelve {album_id: upc}.
+def deezer_album_upcs(album_ids):
+    ids = [a for a in album_ids if a]
+    if not ids:
+        return {}
 
-    Nota: el endpoint batch /albums?ids= devuelve 403 para apps con el modelo
-    de acceso nuevo de Spotify; el individual /albums/{id} sí funciona. Como los
-    álbumes son pocos (vs tracks), pedirlos de a uno no es problema."""
+    def work(aid):
+        return aid, (_deezer_json(f"album/{aid}") or {}).get("upc", "") or ""
+
     out = {}
-    for aid in album_ids:
-        if not aid:
-            continue
-        data = _spotify_get(f"albums/{aid}", token)
-        if data:
-            out[aid] = (data.get("external_ids") or {}).get("upc", "") or ""
+    with ThreadPoolExecutor(max_workers=min(CODES_WORKERS, len(ids))) as ex:
+        for aid, upc in ex.map(work, ids):
+            out[aid] = upc
     return out
 
 
-def enrich_with_spotify(tracks, artist, cid, csec, log=print):
-    token = spotify_token(cid, csec)
+# ---- MusicBrainz (respaldo opcional; límite 1 pedido/seg) ----
+def musicbrainz_isrc(t, artist):
+    """ISRC desde MusicBrainz. 2 pedidos (search + lookup). Devuelve '' si no hay."""
+    q = urllib.parse.quote(f'recording:"{_clean_title(t["track"])}" AND artist:"{artist}"')
+    data = _http_json(f"{MUSICBRAINZ_API}/recording?query={q}&fmt=json&limit=5",
+                      headers={"User-Agent": USER_AGENT})
+    for r in (data or {}).get("recordings", []) or []:
+        ac = " ".join(a.get("name", "") for a in (r.get("artist-credit") or [])
+                      if isinstance(a, dict))
+        dur = round((r.get("length") or 0) / 1000)
+        sc = _match_score(t["track"], artist, t.get("duration_s", 0),
+                          r.get("title", ""), ac, dur)
+        if _confidence(sc[1], sc[2], sc[3]):
+            time.sleep(1.1)  # respetar el límite de MusicBrainz entre los 2 pedidos
+            look = _http_json(f"{MUSICBRAINZ_API}/recording/{r['id']}?fmt=json&inc=isrcs",
+                              headers={"User-Agent": USER_AGENT})
+            isrcs = (look or {}).get("isrcs") or []
+            return isrcs[0] if isrcs else ""
+    return ""
+
+
+def enrich_with_codes(tracks, artist, log=print, use_musicbrainz=False):
+    """Completa isrc/upc/match en los tracks. Deezer principal + MB opcional."""
+    n = len(tracks)
+
+    # 1) Deezer en paralelo (ISRC + album_id por track).
+    def work(t):
+        return (t,) + deezer_match(t, artist)
+
     album_ids = {}
     matched = 0
-    for i, t in enumerate(tracks, 1):
-        isrc, album_id, conf = match_track_on_spotify(token, t, artist)
-        if conf:
-            t["isrc"], t["match"] = isrc, conf
-            if album_id:
-                album_ids.setdefault(album_id, []).append(t)
-            matched += 1
-        if i % 25 == 0:
-            log(f"  ...{i}/{len(tracks)} matcheados")
-    upcs = fetch_album_upcs(token, list(album_ids.keys()))
-    for album_id, ts in album_ids.items():
+    if n:
+        with ThreadPoolExecutor(max_workers=min(CODES_WORKERS, n)) as ex:
+            for t, isrc, album_id, conf in ex.map(work, tracks):
+                if conf:
+                    t["isrc"], t["match"] = isrc, conf
+                    if album_id:
+                        album_ids.setdefault(album_id, []).append(t)
+                    matched += 1
+
+    # 2) UPC por álbum (Deezer, en paralelo).
+    log(f"  Deezer: {matched}/{n} matcheados · UPC de {len(album_ids)} álbumes…")
+    upcs = deezer_album_upcs(list(album_ids.keys()))
+    for aid, ts in album_ids.items():
         for t in ts:
-            t["upc"] = upcs.get(album_id, "")
+            t["upc"] = upcs.get(aid, "")
+
+    # 3) MusicBrainz: respaldo SÓLO para los que quedaron sin ISRC (secuencial, lento).
+    if use_musicbrainz:
+        pendientes = [t for t in tracks if not t["isrc"]]
+        if pendientes:
+            log(f"  MusicBrainz (respaldo): {len(pendientes)} sin ISRC…")
+            for t in pendientes:
+                isrc = musicbrainz_isrc(t, artist)
+                if isrc:
+                    t["isrc"] = isrc
+                    t["match"] = t["match"] or "media"
+                time.sleep(1.1)  # 1 pedido/seg
+
     isrc_n = sum(1 for t in tracks if t["isrc"])
     upc_n = sum(1 for t in tracks if t["upc"])
-    return {"matched": matched, "isrc": isrc_n, "upc": upc_n}
+    return {"matched": matched, "isrc": isrc_n, "upc": upc_n, "source": "Deezer"}
 
 
 # ============================================================
@@ -580,11 +624,12 @@ def slugify(name):
 # Orquestador (lo llama la app web)
 # ============================================================
 
-def relevar(url, yt_key, sp_id=None, sp_secret=None, progress=None):
+def relevar(url, yt_key, with_codes=True, progress=None, use_musicbrainz=False):
     """Releva el catálogo completo de un canal.
 
-    progress(msg, frac) — callback opcional para reportar avance (0.0–1.0).
-    Devuelve dict: artist, channel_title, tracks, distribs, stats, units, spotify.
+    with_codes — buscar ISRC/UPC (Deezer; sin clave). use_musicbrainz — respaldo
+    lento opcional. progress(msg, frac) — callback de avance (0.0–1.0).
+    Devuelve dict: artist, channel_title, tracks, distribs, total_views, units, codes.
     Lanza RelevarError ante problemas mostrables al usuario.
     """
     def step(msg, frac):
@@ -608,13 +653,11 @@ def relevar(url, yt_key, sp_id=None, sp_secret=None, progress=None):
 
     artist = re.sub(r"\s*-\s*Topic$", "", title).strip()
 
-    spot_stats = None
-    if sp_id and sp_secret:
-        step("Buscando códigos ISRC y UPC en Spotify…", 0.55)
-
-        def sp_log(m):
-            step(m, 0.7)
-        spot_stats = enrich_with_spotify(tracks, artist, sp_id, sp_secret, log=sp_log)
+    codes_stats = None
+    if with_codes:
+        step("Buscando códigos ISRC y UPC (Deezer)…", 0.55)
+        codes_stats = enrich_with_codes(
+            tracks, artist, log=lambda m: step(m, 0.75), use_musicbrainz=use_musicbrainz)
 
     step("Armando el Excel…", 0.95)
     units = 1 + 2 * ((len(vids) + 49) // 50)
@@ -625,5 +668,5 @@ def relevar(url, yt_key, sp_id=None, sp_secret=None, progress=None):
         "distribs": _aggregate_distributors(tracks),
         "total_views": sum(t["views"] for t in tracks),
         "units": units,
-        "spotify": spot_stats,
+        "codes": codes_stats,
     }

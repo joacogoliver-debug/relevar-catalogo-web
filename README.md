@@ -2,12 +2,16 @@
 
 App web (Streamlit) que releva el catálogo de un artista de YouTube y devuelve un
 dashboard + un Excel descargable con distribuidora, sello, reproducciones, **ISRC**
-y **UPC**. Mismo motor que el plugin, pero sin Claude Code: se usa desde el navegador.
+y **UPC**. Se usa desde el navegador (sin Claude Code).
+
+Los códigos **ISRC/UPC** salen de **Deezer** (API pública, sin clave). La única
+clave necesaria es la de **YouTube**. (MusicBrainz queda como respaldo opcional,
+apagado por defecto: para catálogos DIY casi no suma y es lento.)
 
 ```
 relevar-web/
 ├── app.py                      # la interfaz (Streamlit)
-├── relevar_core.py             # el motor (YouTube Data API + Spotify)
+├── relevar_core.py             # el motor (YouTube Data API + Deezer)
 ├── distributors.py             # listas de clasificación de distribuidoras
 ├── requirements.txt
 └── .streamlit/
@@ -54,8 +58,6 @@ git push -u origin main
    formato TOML:
    ```toml
    YOUTUBE_API_KEY = "AIza..."
-   SPOTIFY_CLIENT_ID = "..."
-   SPOTIFY_CLIENT_SECRET = "..."
    APP_PASSWORD = "la-contraseña-del-equipo"
    ```
 4. **Deploy.** En 1–2 minutos te da una URL tipo `https://relevar-catalogo.streamlit.app`.
@@ -74,5 +76,6 @@ artista y descargan el Excel. No instalan nada.
   contraseña evita que entre cualquiera). Si la dejás vacía, queda abierta.
 - Cuota: ~12–21 consultas de YouTube por catálogo (de 10.000/día). Una sola clave
   alcanza para todo el equipo.
-- **ISRC/UPC**: se completan vía Spotify por coincidencia (artista + título +
-  duración). Si un código queda vacío es porque no hubo match confiable.
+- **ISRC/UPC**: se completan vía **Deezer** (sin clave) por coincidencia (artista +
+  título + duración), en paralelo. Si un código queda vacío es porque no hubo match
+  confiable. MusicBrainz queda como respaldo opcional (apagado por defecto).

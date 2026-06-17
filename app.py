@@ -98,8 +98,6 @@ def main():
         return
 
     yt_key = secret("YOUTUBE_API_KEY")
-    sp_id = secret("SPOTIFY_CLIENT_ID")
-    sp_secret = secret("SPOTIFY_CLIENT_SECRET")
 
     st.markdown(
         '<div class="hero"><h1>🎵 Relevar Catálogo</h1>'
@@ -112,22 +110,15 @@ def main():
         st.error("⚠️ Falta configurar `YOUTUBE_API_KEY` en el servidor. Avisá al administrador.")
         return
 
-    spotify_available = bool(sp_id and sp_secret)
-
     url = st.text_input(
         "Link del canal / Topic",
         placeholder="https://www.youtube.com/channel/UC...   ó   https://www.youtube.com/@Artista")
 
-    if spotify_available:
-        con_codigos = st.checkbox(
-            "Buscar códigos ISRC y UPC en Spotify",
-            value=True,
-            help="Agrega ISRC (por canción) y UPC (por álbum). Tarda un poco más; "
-                 "si no los necesitás, destildalo para ir más rápido.")
-    else:
-        con_codigos = False
-        st.caption("ℹ️ Spotify no está configurado en el servidor: el relevamiento "
-                   "funciona igual, pero sin códigos ISRC/UPC.")
+    con_codigos = st.checkbox(
+        "Buscar códigos ISRC y UPC (Deezer)",
+        value=True,
+        help="Agrega ISRC (por canción) y UPC (por álbum) desde Deezer. Tarda un "
+             "poco más; si no los necesitás, destildalo para ir más rápido.")
 
     go = st.button("Relevar catálogo", type="primary", disabled=not url)
 
@@ -142,11 +133,7 @@ def main():
             bar.progress(min(max(frac, 0.0), 1.0))
 
         try:
-            res = R.relevar(
-                url.strip(), yt_key,
-                sp_id if con_codigos else None,
-                sp_secret if con_codigos else None,
-                progress=progress)
+            res = R.relevar(url.strip(), yt_key, with_codes=con_codigos, progress=progress)
         except R.RelevarError as e:
             bar.empty(); box.empty()
             st.error(str(e))
@@ -166,7 +153,7 @@ def main():
 def _render(res, xlsx):
     tracks = res["tracks"]
     total = len(tracks)
-    sp = res["spotify"] or {}
+    sp = res["codes"] or {}
 
     st.success(f"✅ {res['artist']} — {total} productos relevados.")
 
@@ -205,8 +192,8 @@ def _render(res, xlsx):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary")
     if sp:
-        st.caption(f"Spotify: {sp.get('matched', 0)}/{total} matcheados · "
-                   f"ISRC {sp.get('isrc', 0)} · UPC {sp.get('upc', 0)}. "
+        st.caption(f"Códigos vía {sp.get('source', 'Deezer')}: {sp.get('matched', 0)}/{total} "
+                   f"matcheados · ISRC {sp.get('isrc', 0)} · UPC {sp.get('upc', 0)}. "
                    "Si un código queda vacío es porque no hubo coincidencia confiable.")
 
 
