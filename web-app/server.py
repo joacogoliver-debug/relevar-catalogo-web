@@ -132,6 +132,7 @@ def to_payload(res):
         "distribs": distribs,
         "top10": top10,
         "hasMojo": has_mojo,
+        "viaTopic": res.get("via_topic", False),
         "codes": codes or None,
         "excelB64": base64.b64encode(R.workbook_bytes(tracks, res["artist"])).decode(),
         "filename": f"Catalogo_{R.slugify(res['artist'])}.xlsx",

@@ -91,6 +91,38 @@ def resolve_channel(url, key):
     )
 
 
+def _is_topic_title(title):
+    return title.strip().lower().endswith("- topic")
+
+
+def channel_uploads_by_id(channel_id, key):
+    """Devuelve (uploads_playlist_id, title) para un channel_id, o (None, None)."""
+    data = api_get("channels", {"part": "snippet,contentDetails", "id": channel_id}, key)
+    items = data.get("items") or []
+    if not items:
+        return None, None
+    ch = items[0]
+    return ch["contentDetails"]["relatedPlaylists"]["uploads"], ch["snippet"]["title"]
+
+
+def find_topic_channel(artist_title, key):
+    """Busca el canal '<artista> - Topic' (cuando te pasan un OAC). Devuelve
+    channel_id o None. Cuesta 100 units de cuota (search.list)."""
+    artist = re.sub(r"\s*-\s*Topic$", "", artist_title, flags=re.IGNORECASE).strip()
+    data = api_get("search", {"part": "snippet", "type": "channel",
+                              "q": f"{artist} - Topic", "maxResults": 5}, key)
+    items = data.get("items", [])
+    want = f"{artist.lower()} - topic"
+    for it in items:  # match exacto primero
+        if it["snippet"]["title"].strip().lower() == want:
+            return it["snippet"]["channelId"]
+    for it in items:  # match flexible: termina en "- topic" y contiene el artista
+        t = it["snippet"]["title"].strip().lower()
+        if t.endswith("- topic") and artist.lower() in t:
+            return it["snippet"]["channelId"]
+    return None
+
+
 def list_video_ids(uploads_playlist, key):
     ids = []
     page = None
@@ -627,9 +659,13 @@ def slugify(name):
 def relevar(url, yt_key, with_codes=True, progress=None, use_musicbrainz=False):
     """Releva el catálogo completo de un canal.
 
+    Si le pasás un OAC (u otro canal que no es Topic), busca automáticamente su
+    canal '<artista> - Topic' y usa ese. Siempre se queda SOLO con los lanzamientos
+    auto-generados (los que tienen "Provided to YouTube by"), descartando videos
+    comunes (vlogs, vivos, MVs, etc.).
+
     with_codes — buscar ISRC/UPC (Deezer; sin clave). use_musicbrainz — respaldo
     lento opcional. progress(msg, frac) — callback de avance (0.0–1.0).
-    Devuelve dict: artist, channel_title, tracks, distribs, total_views, units, codes.
     Lanza RelevarError ante problemas mostrables al usuario.
     """
     def step(msg, frac):
@@ -642,6 +678,16 @@ def relevar(url, yt_key, with_codes=True, progress=None, use_musicbrainz=False):
     step("Resolviendo canal…", 0.05)
     _ch_id, uploads, title = resolve_channel(url, yt_key)
 
+    # Si NO es un canal Topic (ej. un OAC), buscamos su canal "- Topic" automáticamente.
+    via_topic = False
+    if not _is_topic_title(title):
+        step("Es un OAC: buscando su canal Topic…", 0.10)
+        topic_id = find_topic_channel(title, yt_key)
+        if topic_id:
+            t_uploads, t_title = channel_uploads_by_id(topic_id, yt_key)
+            if t_uploads:
+                uploads, title, via_topic = t_uploads, t_title, True
+
     step("Listando productos…", 0.15)
     vids = list_video_ids(uploads, yt_key)
     if not vids:
@@ -649,7 +695,14 @@ def relevar(url, yt_key, with_codes=True, progress=None, use_musicbrainz=False):
 
     step(f"Bajando metadata de {len(vids)} productos…", 0.30)
     videos = fetch_videos(vids, yt_key)
-    tracks = build_tracks(videos)
+
+    # Solo lanzamientos: nos quedamos con los auto-generados (tienen distribuidora
+    # parseada de "Provided to YouTube by"); descartamos videos comunes.
+    tracks = [t for t in build_tracks(videos) if t["distributor"] != "(sin datos)"]
+    if not tracks:
+        raise RelevarError(
+            "No encontré lanzamientos auto-generados (Topic) en este canal. "
+            "Si es un OAC, probá pegar el link de su canal “<artista> - Topic”.")
 
     artist = re.sub(r"\s*-\s*Topic$", "", title).strip()
 
@@ -669,4 +722,5 @@ def relevar(url, yt_key, with_codes=True, progress=None, use_musicbrainz=False):
         "total_views": sum(t["views"] for t in tracks),
         "units": units,
         "codes": codes_stats,
+        "via_topic": via_topic,
     }
