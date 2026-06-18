@@ -105,22 +105,33 @@ def channel_uploads_by_id(channel_id, key):
     return ch["contentDetails"]["relatedPlaylists"]["uploads"], ch["snippet"]["title"]
 
 
+def _clean_artist(name):
+    """Nombre del artista sin '- Topic' ni sufijos de OAC (Oficial/Official/VEVO)."""
+    n = re.sub(r"\s*-\s*Topic$", "", name, flags=re.IGNORECASE).strip()
+    n = re.sub(r"\b(oficial|official|vevo)\b", "", n, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", n).strip(" -·|")
+
+
 def find_topic_channel(artist_title, key):
-    """Busca el canal '<artista> - Topic' (cuando te pasan un OAC). Devuelve
-    channel_id o None. Cuesta 100 units de cuota (search.list)."""
-    artist = re.sub(r"\s*-\s*Topic$", "", artist_title, flags=re.IGNORECASE).strip()
+    """Busca el canal '<artista> - Topic' (cuando te pasan un OAC). Tolera que el
+    OAC tenga sufijos como 'Oficial' que el Topic no tiene. Devuelve channel_id o
+    None. Cuesta 100 units de cuota (search.list)."""
+    artist = _clean_artist(artist_title)
+    na = _normalize(artist)
     data = api_get("search", {"part": "snippet", "type": "channel",
-                              "q": f"{artist} - Topic", "maxResults": 5}, key)
-    items = data.get("items", [])
-    want = f"{artist.lower()} - topic"
-    for it in items:  # match exacto primero
-        if it["snippet"]["title"].strip().lower() == want:
+                              "q": f"{artist} - Topic", "maxResults": 10}, key)
+    best, best_score = None, 0.0
+    for it in data.get("items", []):
+        title = it["snippet"]["title"]
+        if not title.strip().lower().endswith("- topic"):
+            continue
+        base = _normalize(_clean_artist(title))
+        if base == na:                      # match exacto del nombre base
             return it["snippet"]["channelId"]
-    for it in items:  # match flexible: termina en "- topic" y contiene el artista
-        t = it["snippet"]["title"].strip().lower()
-        if t.endswith("- topic") and artist.lower() in t:
-            return it["snippet"]["channelId"]
-    return None
+        score = SequenceMatcher(None, na, base).ratio()
+        if score > best_score:
+            best, best_score = it["snippet"]["channelId"], score
+    return best if best_score >= 0.7 else None  # fallback por similitud
 
 
 def list_video_ids(uploads_playlist, key):
