@@ -1,0 +1,7 @@
+/* MOJO LATAM — Design System
+   Global entry point. Consumers link this single file.
+   Keep this as @import lines only. */
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Relevar Catálogo · MOJO</title>
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="assets/mojo-icon.png" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<script src="_ds_bundle.js"></script>
+<style>
+  html, body { margin: 0; }
+  body { background: var(--surface-page); font-family: var(--font-sans); color: var(--text-body); }
+  .container { max-width: var(--container-max); margin: 0 auto; padding: 0 var(--container-pad); }
+  .screen-fade { animation: fade var(--dur-base) var(--ease-out); }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Todo el JSX va inline en UN bloque: Babel-standalone no ejecuta de forma
+     confiable scripts .jsx externos (quedaban undefined → página en blanco). -->
+<script type="text/babel" data-presets="react">
+const {
+  AppHeader, Card, Input, Checkbox, Button, ProgressBar,
+  KpiCard, SectionHeading, DataTable, BarRow, Badge,
+} = window.DesignSystem_c8d74c;
+
+const EXAMPLE_URL = 'https://www.youtube.com/channel/UCmCinTOMiOol6qtmK8a3sIA';
+
+function distTone(name) {
+  return name === 'MOJO LATAM' ? 'accent' : 'neutral';
+}
+
+function downloadExcel(data) {
+  const bin = atob(data.excelB64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const blob = new Blob([arr], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = data.filename || 'Catalogo.xlsx';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------------------------------------------------------------- PasswordGate
+function PasswordGate({ onOk }) {
+  const [pw, setPw] = React.useState('');
+  const [err, setErr] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  async function submit() {
+    setBusy(true); setErr('');
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (!r.ok) { setErr('Contraseña incorrecta.'); setBusy(false); return; }
+      sessionStorage.setItem('mojo_pw', pw);
+      onOk(pw);
+    } catch (e) { setErr('No se pudo conectar.'); setBusy(false); }
+  }
+
+  return (
+    <div style={{ maxWidth: 420, margin: '0 auto', padding: '88px 0' }}>
+      <Card padding="28px">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--text-h2)', fontWeight: 700, color: 'var(--text-heading)' }}>
+            Acceso del equipo
+          </h2>
+          <Input id="pw" type="password" label="Contraseña" value={pw}
+            placeholder="••••••••"
+            onChange={(e) => setPw(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+            hint={err} />
+          <Button variant="primary" disabled={busy || !pw} onClick={submit}>Entrar</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------- InitialScreen
+function InitialScreen({ onRun, error }) {
+  const [url, setUrl] = React.useState('');
+  const [codes, setCodes] = React.useState(true);
+
+  return (
+    <div style={{ maxWidth: 720, margin: '0 auto', padding: '56px 0 80px' }}>
+      <div style={{ marginBottom: 32 }}>
+        <h1 style={{ margin: 0, fontSize: 'var(--text-display)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', color: 'var(--text-heading)', fontFamily: 'var(--font-display)' }}>
+          Relevar Catálogo
+        </h1>
+        <p style={{ margin: '10px 0 0', fontSize: 'var(--text-lg)', color: 'var(--text-muted)', lineHeight: 'var(--leading-snug)', maxWidth: 580 }}>
+          Pegá el link del canal “Topic”/“Tema” de un artista en YouTube y obtené su catálogo completo:
+          distribuidora, reproducciones de YouTube y los códigos ISRC / UPC.
+        </p>
+      </div>
+
+      {error ? (
+        <div style={{ marginBottom: 18, padding: '12px 16px', borderRadius: 'var(--radius-md)', background: 'var(--danger-soft)', color: 'var(--danger)', fontSize: 'var(--text-sm)', border: '1px solid var(--danger)' }}>
+          {error}
+        </div>
+      ) : null}
+
+      <Card padding="28px">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          <Input
+            size="lg" id="channel" label="Link del canal / Topic"
+            placeholder="https://www.youtube.com/channel/UCxxxxxxxxxx"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && url.trim()) onRun({ url, codes }); }}
+            hint="Pegá la URL del canal “Topic” o “Tema” generado por YouTube."
+          />
+          <Checkbox
+            id="codes" label="Buscar códigos ISRC y UPC"
+            hint="Agrega ISRC (por canción) y UPC (por álbum). Tarda un poco más."
+            checked={codes}
+            onChange={(e) => setCodes(e.target.checked)}
+          />
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <Button size="lg" variant="primary" disabled={!url.trim()} onClick={() => onRun({ url, codes })}>
+              Relevar catálogo
+            </Button>
+            <button type="button" onClick={() => setUrl(EXAMPLE_URL)}
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-sans)', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}>
+              Usar un link de ejemplo
+            </button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------- LoadingScreen
+function LoadingScreen({ withCodes }) {
+  const steps = React.useMemo(() => {
+    const base = [
+      'Leyendo el canal de YouTube…',
+      'Listando lanzamientos y álbumes…',
+      'Calculando reproducciones…',
+      'Clasificando distribuidoras…',
+    ];
+    if (withCodes) base.push('Buscando códigos ISRC y UPC…');
+    base.push('Armando el dashboard…');
+    return base;
+  }, [withCodes]);
+
+  const [pct, setPct] = React.useState(4);
+  const [stepIdx, setStepIdx] = React.useState(0);
+
+  React.useEffect(() => {
+    const start = Date.now();
+    const expected = withCodes ? 16000 : 5000;
+    const id = setInterval(() => {
+      const t = (Date.now() - start) / expected;
+      const eased = 1 - Math.pow(2, -3.2 * t);
+      setPct(Math.min(92, Math.round(4 + eased * 88)));
+      setStepIdx(Math.min(steps.length - 1, Math.floor(Math.min(0.999, eased) * steps.length)));
+    }, 120);
+    return () => clearInterval(id);
+  }, [steps, withCodes]);
+
+  return (
+    <div style={{ maxWidth: 640, margin: '0 auto', padding: '88px 0' }}>
+      <Card padding="32px">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)', boxShadow: '0 0 0 4px var(--mojo-yellow-soft)' }} />
+            <h2 style={{ margin: 0, fontSize: 'var(--text-h2)', fontWeight: 700, color: 'var(--text-heading)' }}>
+              Relevando catálogo…
+            </h2>
+          </div>
+          <ProgressBar value={pct} message={steps[stepIdx]} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+            {steps.map((s, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: i <= stepIdx ? 1 : 0.4 }}>
+                <span style={{ flex: '0 0 auto', width: 16, height: 16, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: i < stepIdx ? 'var(--accent)' : 'transparent', border: i < stepIdx ? 'none' : '2px solid var(--border-strong)' }}>
+                  {i < stepIdx && (
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="var(--text-on-accent)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                  )}
+                </span>
+                <span style={{ fontSize: 'var(--text-sm)', color: i === stepIdx ? 'var(--text-heading)' : 'var(--text-muted)', fontWeight: i === stepIdx ? 600 : 400 }}>{s}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------- ResultsScreen
+function ResultsScreen({ data, onReset }) {
+  const D = data;
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '40px 0 96px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: 'var(--success-soft)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+        </span>
+        <span style={{ fontSize: 'var(--text-h2)', fontWeight: 700, color: 'var(--text-heading)' }}>{D.artist}</span>
+        <span style={{ fontSize: 'var(--text-lg)', color: 'var(--text-muted)' }}>— {D.kpis.productos} productos relevados</span>
+        <Button variant="secondary" size="sm" onClick={onReset} style={{ marginLeft: 'auto' }}>
+          ↻ Relevar otro
+        </Button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 32 }}>
+        <KpiCard label="Productos" value={D.kpis.productos} />
+        <KpiCard label="Reproducciones" value={D.kpis.reproducciones} />
+        <KpiCard label="Álbumes" value={D.kpis.albumes} />
+        <KpiCard label="Con ISRC" value={D.kpis.isrc} accent={D.withCodes}
+          sub={D.withCodes ? 'desde Deezer' : 'no solicitado'} />
+      </div>
+
+      <SectionHeading>Distribución por distribuidora</SectionHeading>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 20, marginBottom: 36, alignItems: 'start' }}>
+        <Card padding="8px 8px 4px">
+          <DataTable
+            columns={[
+              { key: 'name', header: 'Distribuidora', bold: true, render: (v) => (
+                <span style={{ display: 'inline-flex' }}><Badge tone={distTone(v)}>{v}</Badge></span>
+              ) },
+              { key: 'productos', header: 'Productos', align: 'right' },
+              { key: 'pct', header: '%', align: 'right', render: (v) => `${v}%` },
+              { key: 'views', header: 'Reproducciones', align: 'right' },
+            ]}
+            rows={D.distribs}
+          />
+        </Card>
+        <Card padding="22px 24px">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {D.distribs.map((d) => (
+              <BarRow key={d.name} label={d.name} percent={d.pct} value={d.productos}
+                color={d.name === 'MOJO LATAM' ? 'var(--accent)' : 'var(--neutral-300)'} />
+            ))}
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+              Productos por distribuidora{D.hasMojo ? ' · MOJO LATAM destacado' : ''}
+            </span>
+          </div>
+        </Card>
+      </div>
+
+      <SectionHeading count="Top 10">Por reproducciones</SectionHeading>
+      <Card padding="8px 8px 4px" style={{ marginBottom: 36 }}>
+        <DataTable
+          columns={[
+            { key: 'n', header: '#', align: 'right', width: '44px', muted: true },
+            { key: 'track', header: 'Track', bold: true },
+            { key: 'album', header: 'Álbum', muted: true },
+            { key: 'dist', header: 'Distribuidora', render: (v) => (
+              <span style={{ display: 'inline-flex' }}><Badge tone={distTone(v)}>{v}</Badge></span>
+            ) },
+            { key: 'views', header: 'Reproducciones', align: 'right' },
+            { key: 'isrc', header: 'ISRC', mono: true },
+            { key: 'upc', header: 'UPC', mono: true },
+            { key: 'year', header: 'Año', align: 'right', muted: true },
+            { key: 'fecha', header: 'Fecha', align: 'right', muted: true },
+          ]}
+          rows={D.top10}
+        />
+      </Card>
+
+      <Card padding="24px 28px" style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <h3 style={{ margin: 0, fontSize: 'var(--text-h3)', fontWeight: 700, color: 'var(--text-heading)' }}>
+            Catálogo completo
+          </h3>
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+            {D.kpis.productos} productos · distribuidora, reproducciones, ISRC y UPC en un Excel.
+          </p>
+        </div>
+        <Button size="lg" variant="primary" onClick={() => downloadExcel(D)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2 }}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
+          Descargar Excel
+        </Button>
+      </Card>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------- App
+function App() {
+  const [phase, setPhase] = React.useState('checking'); // checking|gate|initial|loading|results
+  const [pw, setPw] = React.useState(sessionStorage.getItem('mojo_pw') || '');
+  const [withCodes, setWithCodes] = React.useState(true);
+  const [data, setData] = React.useState(null);
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    fetch('/api/config').then(r => r.json()).then(cfg => {
+      if (cfg.needs_password && !sessionStorage.getItem('mojo_pw')) setPhase('gate');
+      else setPhase('initial');
+    }).catch(() => setPhase('initial'));
+  }, []);
+
+  async function run({ url, codes }) {
+    setWithCodes(codes); setError(''); setPhase('loading');
+    try {
+      const r = await fetch('/api/relevar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-App-Password': pw },
+        body: JSON.stringify({ url, with_codes: codes }),
+      });
+      if (r.status === 401) { sessionStorage.removeItem('mojo_pw'); setPhase('gate'); return; }
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.detail || 'Ocurrió un error.');
+      setData(body); setPhase('results');
+    } catch (e) {
+      setError(e.message || 'Ocurrió un error.'); setPhase('initial');
+    }
+  }
+
+  return (
+    <div>
+      <AppHeader logoSrc="assets/mojo-logo.png" title="Relevar Catálogo" subtitle="Herramienta interna" />
+      <div className="container">
+        <div className="screen-fade" key={phase}>
+          {phase === 'gate' && <PasswordGate onOk={(p) => { setPw(p); setPhase('initial'); }} />}
+          {phase === 'initial' && <InitialScreen onRun={run} error={error} />}
+          {phase === 'loading' && <LoadingScreen withCodes={withCodes} />}
+          {phase === 'results' && data && (
+            <ResultsScreen data={data} onReset={() => { setData(null); setError(''); setPhase('initial'); }} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
