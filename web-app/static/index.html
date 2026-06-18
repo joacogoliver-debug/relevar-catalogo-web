@@ -29,7 +29,7 @@ const {
   KpiCard, SectionHeading, DataTable, BarRow, Badge,
 } = window.DesignSystem_c8d74c;
 
-const EXAMPLE_URL = 'https://www.youtube.com/channel/UCmCinTOMiOol6qtmK8a3sIA';
+const EXAMPLE_URL = 'https://www.youtube.com/channel/UCGUvyq8_hUkYQ7fBORbc84A';
 
 function distTone(name) {
   return name === 'MOJO LATAM' ? 'accent' : 'neutral';
@@ -215,7 +215,7 @@ function ResultsScreen({ data, onReset }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 32 }}>
         <KpiCard label="Productos" value={D.kpis.productos} />
-        <KpiCard label="Reproducciones" value={D.kpis.reproducciones} />
+        <KpiCard label="Reproducciones" value={D.kpis.reproducciones} sub="del canal Topic en YouTube" />
         <KpiCard label="Álbumes" value={D.kpis.albumes} />
         <KpiCard label="Con ISRC" value={D.kpis.isrc} accent={D.withCodes}
           sub={D.withCodes ? 'desde Deezer' : 'no solicitado'} />
