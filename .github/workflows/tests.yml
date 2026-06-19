@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Both relevar_core.py modules import openpyxl at module load time,
+          # so the offline parse test's import chain needs it. Install from the
+          # repo's requirements.txt files (root + web-app) to cover both tests.
+          pip install -r requirements.txt
+          pip install -r web-app/requirements.txt
+
+      - name: Run offline parse test (root)
+        run: python test_parse_description.py
+
+      - name: Run offline parse test (web-app)
+        run: python web-app/test_parse_description.py
