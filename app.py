@@ -4,8 +4,9 @@ app.py — Relevar Catálogo (app web Streamlit).
 Pegás el link del canal/Topic de un artista y devuelve un dashboard + un Excel
 descargable con distribuidora, sello, reproducciones, ISRC y UPC.
 
-Las claves se leen de los "secrets" del servidor (nunca van en el código):
-    YOUTUBE_API_KEY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, APP_PASSWORD
+Los códigos ISRC/UPC salen de Deezer (API pública, sin clave). Las claves se
+leen de los "secrets" del servidor (nunca van en el código):
+    YOUTUBE_API_KEY, APP_PASSWORD
 """
 
 import os

@@ -2,11 +2,12 @@
 relevar_core.py — Motor de relevamiento de catálogos (sin CLI), para la app web.
 
 Toma la URL de un canal de YouTube (Topic / Official Artist Channel / @handle),
-enumera sus productos vía la YouTube Data API, opcionalmente enriquece con Spotify
-(ISRC + UPC) y arma un Excel en memoria. Las claves se pasan como parámetros (la
-app las toma de sus secrets), no se leen de archivos.
+enumera sus productos vía la YouTube Data API, opcionalmente enriquece con Deezer
+(ISRC + UPC; MusicBrainz como respaldo opcional) y arma un Excel en memoria. Las
+claves se pasan como parámetros (la app las toma de sus secrets), no se leen de
+archivos.
 
-Función principal: relevar(url, yt_key, sp_id, sp_secret, progress) -> dict.
+Función principal: relevar(url, yt_key, with_codes, progress) -> dict.
 """
 
 import io
@@ -178,7 +179,7 @@ def _iso_duration_to_seconds(s):
 # Parseo (distribuidora / álbum / año / sello)  — autocontenido
 # ============================================================
 
-_RE_PHONO_YEAR = re.compile(r"℗\s*(\d{4})\s+(.+)")
+_RE_PHONO_YEAR = re.compile(r"℗\s*(\d{4})(?:\s+(.+))?")
 _RE_PHONO_LINE = re.compile(r"^\s*℗\s*(.+)$", re.MULTILINE)
 _RE_LEADING_YEAR = re.compile(r"^\d{4}\s+")
 _RE_RELEASED = re.compile(r"Released on:\s*(\d{4})-\d{2}-\d{2}")
@@ -201,15 +202,21 @@ def parse_description(desc):
 
     # Álbum: tercer bloque del formato auto-generado
     #   [0] Provided to YouTube by X / [1] Track · Artista / [2] Álbum
+    # En singles/EP no hay bloque de álbum y el [2] es la línea ℗ (o "Released
+    # on:"): no es un álbum, así que lo descartamos y queda "(single / sin álbum)".
     blocks = [b.strip() for b in re.split(r"\n\s*\n", desc) if b.strip()]
     if len(blocks) >= 3 and blocks[0].lower().startswith(prefix):
-        res["album"] = blocks[2].splitlines()[0].strip()
+        cand = blocks[2].splitlines()[0].strip()
+        if cand and not cand.startswith("℗") and not cand.lower().startswith("released on:"):
+            res["album"] = cand
 
-    # Año + sello
+    # Año + sello. La etiqueta (sello) es opcional: una línea ℗ que sólo trae el
+    # año (p. ej. "℗ 2023") igual aporta release_year, sin inventar un sello.
     m = _RE_PHONO_YEAR.search(desc)
     if m:
         res["release_year"] = int(m.group(1))
-        res["label"] = m.group(2).strip()
+        label = (m.group(2) or "").strip()
+        res["label"] = label or None
     else:
         pm = _RE_PHONO_LINE.search(desc)
         if pm:
@@ -252,9 +259,9 @@ def build_tracks(videos):
             "category": classify(meta["distributor"]),
             "label": meta["label"] or "",
             "release_year": meta["release_year"] or "",
-            "isrc": "",   # se completa por enriquecimiento (Spotify), si está disponible
+            "isrc": "",   # se completa por enriquecimiento (Deezer), si está disponible
             "upc": "",    # idem (a nivel álbum)
-            "match": "",  # confianza del match con Spotify: alta / media / ""
+            "match": "",  # confianza del match con Deezer: alta / media / ""
             "duration_s": _iso_duration_to_seconds(cd.get("duration")),
             "views": int(st.get("viewCount", 0) or 0),
             "likes": int(st.get("likeCount", 0) or 0),
@@ -537,7 +544,7 @@ def build_resumen(wb, tracks, artist):
     if isrc_n:
         upc_n = sum(1 for t in tracks if t.get("upc"))
         subtitle += (f"  ·  ISRC: {isrc_n}/{total_videos}"
-                     f"  ·  UPC: {upc_n}/{total_videos} (vía Spotify)")
+                     f"  ·  UPC: {upc_n}/{total_videos} (vía Deezer)")
     _set(ws, "B3", subtitle, _f(9, False, GRAY), _fill(PANEL))
     _fill_range(ws, "B2:G2", _fill(PANEL))
     _fill_range(ws, "B3:G3", _fill(PANEL))
